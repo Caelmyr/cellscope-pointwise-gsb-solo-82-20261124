@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#10231f">
+<title>Cellscope · EL 面板检查台</title>
+<link rel="stylesheet" href="/static/cellscope.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><div><b>Cellscope</b><small>电致发光面板检查台</small></div></div>
+  <a class="top-link" href="/prepare">照片准备 <span aria-hidden="true">↗</span></a>
+</header>
+<main class="shell">
+  <aside class="library">
+    <div class="rail-title"><h2>照片库</h2><button class="subtle" id="demo">载入练习</button></div>
+    <button class="upload" id="upload">＋ 导入 EL 原片</button>
+    <input id="file" type="file" accept="image/png,image/tiff,image/jpeg" hidden>
+    <div class="panel-list" id="library"></div>
+    <div class="saved-layout">
+      <div class="rail-title"><h2>检查记录</h2></div>
+      <div class="saved-list" id="saved"></div>
+    </div>
+  </aside>
+  <section class="main">
+    <div class="heading">
+      <div><p class="pretitle">EL INSPECTION</p><h1 id="title">面板检查</h1><p class="subtitle" id="source-info">导入面板原片，或载入合成练习。</p></div>
+      <div class="download-group">
+        <a id="csv" class="secondary" hidden download>报告 CSV ↓</a>
+        <a id="png" class="secondary" hidden download>标记 PNG ↓</a>
+        <button class="primary" id="save" disabled>保存检查</button>
+      </div>
+    </div>
+    <div class="modebar" id="modes" aria-label="检查项目"></div>
+    <div class="workspace">
+      <div class="canvas-column">
+        <section class="card image-card">
+          <div class="bar"><h2>原片定位</h2><label class="toggle"><input type="checkbox" id="marks" checked>显示标记</label></div>
+          <div class="image-stage">
+            <div class="empty" id="empty"><span aria-hidden="true">⊞</span><p>选择照片开始检查</p></div>
+            <canvas id="photo" hidden aria-label="EL 面板照片。选择定位工具后使用原片坐标。"></canvas>
+          </div>
+          <div class="tools" aria-label="原片定位工具">
+            <button data-tool="roi" disabled>框检查区</button>
+            <button data-tool="trace" disabled>画剖线</button>
+            <button data-tool="rail_window" disabled>框焊带窗</button>
+            <button id="pin" disabled>暂留剖线</button>
+            <span id="position"></span>
+          </div>
+          <div id="pins" class="pins"></div>
+        </section>
+        <section class="card plot-card" id="plot-box" hidden>
+          <div class="bar"><h2 id="plot-title">测量曲线</h2><span id="sample-read"></span></div>
+          <canvas id="plot" width="850" height="200" aria-label="测量曲线"></canvas>
+        </section>
+      </div>
+      <aside class="right">
+        <form id="settings" class="card settings">
+          <div class="bar"><h2>检查参数</h2><span>原片坐标</span></div>
+          <fieldset id="inputs" disabled>
+            <label>比例 <span>mm/px</span><input type="number" name="mm_per_pixel" min=".001" max="100" step=".001" required></label>
+            <label>暗区阈值 <span>0–1</span><input type="number" name="dark_cutoff" min=".01" max=".99" step=".01" required></label>
+            <label>电池片行数<input type="number" name="rows" min="1" max="24" required></label>
+            <label>电池片列数<input type="number" name="columns" min="1" max="32" required></label>
+            <label>最小斑块 <span>px</span><input type="number" name="min_area" min="2" max="200000" required></label>
+            <label>亮斑阈值 <span>0–1</span><input type="number" name="hot_cutoff" min=".01" max="1" step=".01" required></label>
+            <label>剖线旁读宽 <span>px</span><input type="number" name="band" min="1" max="30" required></label>
+          </fieldset>
+          <div class="parameter-actions"><button id="apply" class="secondary" type="button" disabled>保留设置</button><button id="run" class="primary" type="submit" disabled>重算检查</button></div>
+        </form>
+        <section class="card results">
+          <div class="bar"><h2 id="result-title">读数</h2><span id="result-state"></span></div>
+          <div class="metrics" id="metrics"></div>
+          <div class="result-rows" id="rows"></div>
+        </section>
+      </aside>
+    </div>
+  </section>
+</main>
+<div id="status" role="status" aria-live="polite"></div>
+<script src="/static/cellscope.js"></script>
+</body>
+</html>
