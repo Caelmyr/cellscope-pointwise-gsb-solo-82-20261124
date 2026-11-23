@@ -4,6 +4,7 @@ const byId = (name) => document.getElementById(name);
 const state = {
   modes: {}, mode: 'cells', panel: null, options: null, image: null, result: null,
   tool: null, anchor: null, hover: null, marker: null, plotCursor: null, serial: 0,
+  proposal: null,
 };
 const photoCanvas = byId('photo');
 const photoContext = photoCanvas.getContext('2d');
@@ -112,11 +113,12 @@ function renderModes() {
     }));
     list.append(button);
   }
+  byId('seams').disabled = !state.panel || state.mode !== 'cells';
 }
 
 function enableDesk(enabled) {
   for (const button of tools) button.disabled = !enabled;
-  for (const name of ['inputs', 'save', 'run', 'apply', 'pin']) byId(name).disabled = !enabled;
+  for (const name of ['inputs', 'save', 'run', 'apply', 'pin', 'seams']) byId(name).disabled = !enabled;
 }
 
 async function openPanel(id) {
@@ -130,6 +132,7 @@ async function openPanel(id) {
   state.image = image;
   state.options = panel.settings;
   state.result = null;
+  state.proposal = null;
   localStorage.setItem('cellscope-panel', id);
   byId('title').textContent = panel.title;
   byId('source-info').textContent = `${sourceTag(panel)} · ${panel.filename} · ${panel.width} × ${panel.height} px`;
@@ -171,6 +174,64 @@ function drawPins() {
   });
 }
 
+async function fetchProposal() {
+  if (!state.panel) return;
+  const serial = ++state.serial;
+  const proposal = await request(panelPath('/seams'), 'POST', {settings: inputValues()});
+  if (serial !== state.serial) return;
+  state.proposal = proposal;
+  renderSeamBox();
+  drawPhoto();
+  notice(proposal.moved ? `已推荐 ${proposal.moved} 道竖向分界，请核对依据后采用`
+                        : '当前分法无需调整，详见分界说明');
+}
+
+function renderSeamBox() {
+  const box = byId('seam-box');
+  box.replaceChildren();
+  const proposal = state.proposal;
+  const adopted = Boolean(state.options && state.options.column_edges);
+  if (!proposal && !adopted) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  if (proposal) {
+    box.append(piece('h3', '', '竖向分界推荐（行界仍按等分）'));
+    const list = piece('ul', 'seam-notes');
+    for (const note of proposal.notes) list.append(piece('li', '', note));
+    const actions = piece('div', 'seam-actions');
+    if (proposal.moved) {
+      const adopt = piece('button', 'primary', '采用推荐分界');
+      adopt.addEventListener('click', safe(async () => {
+        state.options = {...inputValues(), column_edges: proposal.normalized};
+        state.proposal = null;
+        renderSeamBox();
+        await run();
+        notice('已按推荐分界重读电池片；点「保留设置」后重开仍可见');
+      }));
+      actions.append(adopt);
+    }
+    const dismiss = piece('button', 'secondary', proposal.moved ? '忽略' : '知道了');
+    dismiss.addEventListener('click', () => {
+      state.proposal = null;
+      renderSeamBox();
+      drawPhoto();
+    });
+    actions.append(dismiss);
+    box.append(list, actions);
+  } else {
+    const reset = piece('button', 'secondary', '恢复等宽分界');
+    reset.addEventListener('click', safe(async () => {
+      state.options = {...inputValues(), column_edges: null};
+      renderSeamBox();
+      await run();
+      notice('已恢复等宽分界');
+    }));
+    box.append(piece('p', 'quiet', '电池片列界：自定义（随设置保存）。'), reset);
+  }
+}
+
 function drawMark(mark, scaleX, scaleY) {
   const points = mark.points.map(([x, y]) => [x * scaleX, y * scaleY]);
   photoContext.strokeStyle = mark.color;
@@ -203,6 +264,9 @@ function drawPhoto() {
   const scaleY = height / state.panel.height;
   if (byId('marks').checked) {
     for (const mark of state.result?.marks || []) drawMark(mark, scaleX, scaleY);
+  }
+  if (state.proposal) {
+    for (const mark of state.proposal.marks) drawMark(mark, scaleX, scaleY);
   }
   if (state.anchor && state.hover) {
     const [ax, ay] = state.anchor, [bx, by] = state.hover;
@@ -310,6 +374,7 @@ function renderResult() {
   drawPhoto();
   drawPlot();
   listChecks();
+  renderSeamBox();
 }
 
 async function run() {
@@ -334,6 +399,7 @@ async function openCheck(id) {
   state.options = saved.settings;
   state.marker = null;
   state.plotCursor = null;
+  state.proposal = null;
   drawInputs();
   renderModes();
   renderResult();
@@ -387,11 +453,15 @@ photoCanvas.addEventListener('click', safe(async (event) => {
   }
   const coords = name === 'trace' ? [initial, point] :
     [Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)];
-  state.options = {...inputValues(), [name]: coords};
+  state.options = name === 'roi'
+    ? {...inputValues(), roi: coords, column_edges: null}
+    : {...inputValues(), [name]: coords};
+  if (name === 'roi') state.proposal = null;
   if (name !== 'roi') state.mode = name === 'trace' ? 'trace' : 'rails';
   selectTool(null);
   renderModes();
   await run();
+  if (name === 'roi' && state.mode === 'cells') await fetchProposal();
 }));
 
 plotCanvas.addEventListener('click', (event) => {
@@ -410,6 +480,16 @@ plotCanvas.addEventListener('click', (event) => {
 });
 
 for (const button of tools) button.addEventListener('click', () => selectTool(button.dataset.tool));
+byId('seams').addEventListener('click', safe(fetchProposal));
+for (const name of ['rows', 'columns']) {
+  byId('settings').elements[name].addEventListener('change', () => {
+    if (!state.options) return;
+    state.proposal = null;
+    if (name === 'columns') state.options = {...state.options, column_edges: null};
+    renderSeamBox();
+    drawPhoto();
+  });
+}
 byId('marks').addEventListener('change', drawPhoto);
 byId('settings').addEventListener('submit', safe(async (event) => { event.preventDefault(); await run(); }));
 byId('upload').addEventListener('click', () => { byId('file').value = ''; byId('file').click(); });

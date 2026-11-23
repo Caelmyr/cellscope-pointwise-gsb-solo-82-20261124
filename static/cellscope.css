@@ -62,6 +62,12 @@ h1{font-size:27px;font-weight:760;line-height:1.27;margin:2px 0}
 .pins{display:flex;flex-wrap:wrap;gap:5px;padding:0 11px 9px}
 .pins:empty{display:none}
 .pins button{font-size:11px;color:#5d430e;background:#fcf6e6}
+.seam-box{margin:0 11px 10px;border:1px solid #cfe0da;border-radius:8px;background:#f4faf7;padding:9px 11px;display:grid;gap:8px}
+.seam-box h3{margin:0;font-size:12px}
+.seam-notes{margin:0;padding-left:18px;display:grid;gap:4px;font-size:12px}
+.seam-actions{display:flex;gap:7px}
+.seam-actions button{font-size:12px;padding:5px 9px}
+.seam-box .quiet{padding:0}
 .plot-card #plot{width:100%;height:auto;padding:0 10px;display:block;cursor:crosshair}
 .settings fieldset{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;border:0;padding:0 12px 10px;margin:0}
 .settings label{font-size:12px;color:var(--ink)}

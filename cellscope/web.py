@@ -8,7 +8,7 @@ from werkzeug.exceptions import NotFound
 
 from image_lab.validation import Invalid
 
-from . import demo, inspection, model, output, photo
+from . import demo, inspection, model, output, photo, seams
 from .store import Library
 
 
@@ -98,6 +98,13 @@ def install(app, path):
         panel = library.panel(panel_id)
         chosen = model.settings(value.get("settings", {}), panel["settings"])
         return jsonify(make_result(library, panel, model.mode(value.get("mode")), chosen))
+
+    @api.post("/panels/<panel_id>/seams")
+    def seam_proposal(panel_id):
+        value = payload()
+        panel = library.panel(panel_id)
+        chosen = model.settings(value.get("settings", {}), panel["settings"])
+        return jsonify(seams.recommend(photo.observe(library.source(panel), chosen), chosen))
 
     @api.post("/panels/<panel_id>/checks")
     def save(panel_id):

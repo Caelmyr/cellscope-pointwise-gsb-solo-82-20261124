@@ -38,20 +38,33 @@ def compact(value, digits=3):
     return round(float(value), digits)
 
 
+def vertical_edges(view, settings):
+    x0, _, x1, _ = view.region
+    saved = settings.get("column_edges")
+    if saved and len(saved) == settings["columns"] + 1:
+        edges = [int(round(value * view.size[0])) for value in saved]
+        if edges[0] == x0 and edges[-1] == x1 and \
+                all(stop - start >= 3 for start, stop in zip(edges, edges[1:])):
+            return edges, True
+    return list(np.rint(np.linspace(x0, x1, settings["columns"] + 1)).astype(int)), False
+
+
 def grid(view, settings):
     x0, y0, x1, y1 = view.region
-    x_edges = np.rint(np.linspace(x0, x1, settings["columns"] + 1)).astype(int)
+    x_edges, custom = vertical_edges(view, settings)
     y_edges = np.rint(np.linspace(y0, y1, settings["rows"] + 1)).astype(int)
     if min(np.min(np.diff(x_edges)), np.min(np.diff(y_edges))) < 3:
         raise Invalid("检查框过窄，无法按当前行列数拆分。")
-    return [([int(left), int(top), int(right), int(bottom)], f"R{r + 1} · C{c + 1}")
-            for r, (top, bottom) in enumerate(zip(y_edges, y_edges[1:]))
-            for c, (left, right) in enumerate(zip(x_edges, x_edges[1:]))]
+    cells = [([int(left), int(top), int(right), int(bottom)], f"R{r + 1} · C{c + 1}")
+             for r, (top, bottom) in enumerate(zip(y_edges, y_edges[1:]))
+             for c, (left, right) in enumerate(zip(x_edges, x_edges[1:]))]
+    return cells, custom
 
 
 def cell_map(view, settings):
+    cells, custom = grid(view, settings)
     rows, marks, means = [], [], []
-    for (x0, y0, x1, y1), name in grid(view, settings):
+    for (x0, y0, x1, y1), name in cells:
         inset = max(1, min(x1 - x0, y1 - y0) // 18)
         pixels = view.values[y0 + inset:y1 - inset, x0 + inset:x1 - inset]
         median = compact(np.median(pixels))
@@ -61,7 +74,7 @@ def cell_map(view, settings):
                            [(x0 + x1) // 2, (y0 + y1) // 2]))
         marks.append(rectangle([[x0, y0], [x1, y1]], "#dbbd73", name))
     stats = [metric("电池片", len(rows)), metric("最低中位灰度", min(means)),
-             metric("最高中位灰度", max(means))]
+             metric("最高中位灰度", max(means)), metric("列界", "自定义" if custom else "等宽")]
     return stats, rows, marks, None
 
 

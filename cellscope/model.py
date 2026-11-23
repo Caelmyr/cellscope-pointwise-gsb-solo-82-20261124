@@ -77,6 +77,17 @@ def rectangle(value, label):
     return [x0, y0, x1, y1]
 
 
+def column_edges(value, columns):
+    if value is None:
+        return None
+    if not isinstance(value, list) or len(value) != columns + 1:
+        return None
+    edges = [numeric(item, "竖向分界", 0, 1) for item in value]
+    if any(stop - start < 1e-4 for start, stop in zip(edges, edges[1:])):
+        raise Invalid("竖向分界应严格递增。")
+    return edges
+
+
 def settings(value, fallback):
     chosen = {**fallback, **object_value(value)}
     limits = {
@@ -93,6 +104,9 @@ def settings(value, fallback):
     if not isinstance(pins, list) or len(pins) > 12:
         raise Invalid("一张照片最多暂留 12 段剖线。")
     result["pins"] = [points(pin) for pin in pins]
+    edges = column_edges(chosen.get("column_edges"), result["columns"])
+    if edges is not None:
+        result["column_edges"] = edges
     return result
 
 
