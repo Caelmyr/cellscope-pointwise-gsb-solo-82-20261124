@@ -1,6 +1,6 @@
 """EL brightness, contour, grid, busbar and one-segment trace measurements."""
 
-from math import hypot
+from math import atan2, degrees, hypot, pi
 
 import cv2
 import numpy as np
@@ -8,6 +8,9 @@ import numpy as np
 from image_lab.validation import Invalid
 
 from . import model, photo
+
+TURN_LIMIT = 45.0   # 续接候选允许的最大转向（度）
+TURN_WEIGHT = 0.12  # 综合代价中每度转向折算的毫米数
 
 
 def metric(label, value, units=""):
@@ -103,10 +106,10 @@ def hot_map(view, settings):
     return regions(view, settings, bright=True)
 
 
-def measure_segment(view, endpoints, band):
+def sample_line(view, p0, p1, band):
     """Read along one uninterrupted straight segment and its neighboring bands."""
     width, height = view.size
-    (x0, y0), (x1, y1) = [photo.point(item, width, height) for item in endpoints]
+    (x0, y0), (x1, y1) = p0, p1
     length = hypot(x1 - x0, y1 - y0)
     if length < 2:
         raise Invalid("剖线端点至少需要相距两个像素。")
@@ -126,34 +129,169 @@ def measure_segment(view, endpoints, band):
     samples = [{"x": compact(distance * view.mm), "y": compact(value)} for distance, value in
                zip(np.linspace(0, length, count), contrast)]
     return {"ends": [[x0, y0], [x1, y1]], "samples": samples, "length": compact(length * view.mm, 2),
-            "contrast": compact(np.median(contrast))}
+            "pixels": length, "contrast": compact(np.median(contrast))}
 
 
-def crack_trace(view, settings):
-    main = measure_segment(view, settings["trace"], settings["band"])
-    pins = [[photo.point(p, *view.size) for p in pin] for pin in settings["pins"]]
-    marks = [line(main["ends"], "#4fe6d0", "当前剖线")]
-    marks.extend(line(pin, "#dbbd73", f"暂留 {index}") for index, pin in enumerate(pins, 1))
-    rows = [record("起点", main["ends"][0], "原片像素", main["ends"][0]),
-            record("终点", main["ends"][1], "原片像素", main["ends"][1])]
-    metrics = [metric("剖线长度", main["length"], "mm"), metric("中位对比", main["contrast"]),
-               metric("暂留剖线", len(pins))]
-    graph = {**plot("沿剖线明暗差", main["samples"]), "trace_ends": main["ends"]}
-    return metrics, rows, marks, graph
+def chain_parts(main, links):
+    """Orient the main segment and adopted links into one continuous chain."""
+    parts = [[main[0], main[1]]]
+    if links:
+        def distance(a, b):
+            return hypot(a[0] - b[0], a[1] - b[1])
+
+        if min(distance(main[0], p) for p in links[0]) < min(distance(main[1], p) for p in links[0]):
+            parts[0] = [main[1], main[0]]
+        for link in links:
+            tail = parts[-1][1]
+            parts.append([link[1], link[0]] if distance(tail, link[1]) < distance(tail, link[0])
+                         else [link[0], link[1]])
+    gaps = [hypot(parts[i + 1][0][0] - parts[i][1][0], parts[i + 1][0][1] - parts[i][1][1])
+            for i in range(len(parts) - 1)]
+    return parts, gaps
 
 
-def rail_positions(view, settings):
-    x0, y0, x1, y1 = photo.box(settings["rail_window"], *view.size)
+def rail_spans(view, window):
+    """Locate the narrow dark rail bands inside the circled positioning window."""
+    x0, y0, x1, y1 = photo.box(window, *view.size)
     pixels = view.values[y0:y1, x0:x1]
     profile = np.median(pixels, axis=0)
     if len(profile) < 4:
-        raise Invalid("定位窗内至少需要四列。")
+        return None
     cutoff = np.quantile(profile, .75) * .72
     dark = profile < cutoff
     changes = np.diff(np.r_[False, dark, False].astype(np.int8))
     spans = [(int(left + x0), int(right + x0))
              for left, right in zip(np.flatnonzero(changes == 1), np.flatnonzero(changes == -1))
              if 1 <= right - left <= max(6, (x1 - x0) // 12)]
+    return (x0, y0, x1, y1), spans, profile, cutoff
+
+
+def recommend_continuation(view, settings, parts):
+    """Pick the most credible parked segment continuing the chain across the circled rail."""
+    if not settings["pins"]:
+        return None, None
+    located = rail_spans(view, settings["rail_window"])
+    if located is None or not located[1]:
+        return None, "焊带定位窗内没有识别出窄暗带，无法推荐续接。"
+    (x0, y0, x1, y1), spans = located[0], located[1]
+    ends = parts[-1]["ends"]
+    if len(parts) == 1:
+        def clearance(point):
+            return min(min(abs(point[0] - left), abs(point[0] - right)) for left, right in spans)
+        tip, base = (ends[1], ends[0]) if clearance(ends[1]) <= clearance(ends[0]) else (ends[0], ends[1])
+    else:
+        tip, base = ends[1], ends[0]
+    rail_left, rail_right = min(spans, key=lambda span: min(abs(tip[0] - span[0]), abs(tip[0] - span[1])))
+    gap_limit = max(3 * (rail_right - rail_left) * view.mm, 1.5)
+    heading = atan2(tip[1] - base[1], tip[0] - base[0])
+    candidates = []
+    for index, pin in enumerate(settings["pins"]):
+        head, tail = sorted((photo.point(p, *view.size) for p in pin),
+                            key=lambda p: hypot(p[0] - tip[0], p[1] - tip[1]))
+        across = head[0] >= rail_right if tip[0] < (rail_left + rail_right) / 2 else head[0] < rail_left
+        if not across or not (y0 - 6 <= tip[1] <= y1 + 6 and y0 - 6 <= head[1] <= y1 + 6):
+            continue
+        gap_mm = hypot(head[0] - tip[0], head[1] - tip[1]) * view.mm
+        if gap_mm > gap_limit:
+            continue
+        turn = abs(degrees((atan2(tail[1] - head[1], tail[0] - head[0]) - heading + pi) % (2 * pi) - pi))
+        if turn > TURN_LIMIT:
+            continue
+        candidates.append({"pin": index, "head": head, "gap_mm": gap_mm, "turn": turn,
+                           "cost": gap_mm + TURN_WEIGHT * turn})
+    if not candidates:
+        return None, "附近没有同一条焊带两侧、端头够近且方向接得上的暂留段，保持当前剖线。"
+    best = min(candidates, key=lambda c: (c["cost"], c["gap_mm"]))
+    shown = [{"pin": c["pin"], "gap_mm": compact(c["gap_mm"], 2), "turn_deg": compact(c["turn"], 1),
+              "cost": compact(c["cost"], 2)} for c in candidates]
+    best_shown = next(item for item in shown if item["pin"] == best["pin"])
+    reason = [f"暂留 {best['pin'] + 1} 最可信：间隔 {best_shown['gap_mm']} mm、"
+              f"转向 {best_shown['turn_deg']}°，综合代价 {best_shown['cost']} 最低"]
+    for other in shown:
+        if other["pin"] == best["pin"]:
+            continue
+        if other["gap_mm"] < best_shown["gap_mm"] and other["turn_deg"] > best_shown["turn_deg"]:
+            reason.append(f"暂留 {other['pin'] + 1} 端头更近（{other['gap_mm']} mm）"
+                          f"但转向 {other['turn_deg']}° 更急")
+        elif other["turn_deg"] < best_shown["turn_deg"] and other["gap_mm"] > best_shown["gap_mm"]:
+            reason.append(f"暂留 {other['pin'] + 1} 方向更顺（{other['turn_deg']}°）"
+                          f"但间隔 {other['gap_mm']} mm 更长")
+        else:
+            reason.append(f"暂留 {other['pin'] + 1} 间隔 {other['gap_mm']} mm、"
+                          f"转向 {other['turn_deg']}°，代价 {other['cost']} 更高")
+    reason = "；".join(reason) + f"。门槛：同一焊带两侧、间隔 ≤ {compact(gap_limit, 2)} mm、转向 ≤ {TURN_LIMIT:g}°"
+    continuation = {"pin": best["pin"], "label": f"暂留 {best['pin'] + 1}", "reason": reason,
+                    "gap_mm": best_shown["gap_mm"], "turn_deg": best_shown["turn_deg"],
+                    "cost": best_shown["cost"], "joint": list(tip), "head": list(best["head"])}
+    return continuation, None
+
+
+def crack_trace(view, settings):
+    band = settings["band"]
+    main_ends = [photo.point(p, *view.size) for p in settings["trace"]]
+    links = [[photo.point(p, *view.size) for p in link] for link in settings.get("links") or []]
+    pins = [[photo.point(p, *view.size) for p in pin] for pin in settings["pins"]]
+    chain, gaps = chain_parts(main_ends, links)
+    parts = [sample_line(view, p0, p1, band) for p0, p1 in chain]
+
+    samples, trace_parts, covered = [], [], []
+    offset = 0.0
+    for index, part in enumerate(parts):
+        length_mm = part["pixels"] * view.mm
+        samples.extend({"x": compact(sample["x"] + offset), "y": sample["y"]} for sample in part["samples"])
+        trace_parts.append({"ends": part["ends"], "from": compact(offset), "to": compact(offset + length_mm)})
+        offset += length_mm
+        if index < len(gaps):
+            gap_mm = gaps[index] * view.mm
+            covered.append({"from": compact(offset), "to": compact(offset + gap_mm), "mm": compact(gap_mm, 2)})
+            samples.append({"x": compact(offset + gap_mm / 2), "y": None})
+            offset += gap_mm
+
+    continuation, note = recommend_continuation(view, settings, parts)
+
+    marks = [line(parts[0]["ends"], "#4fe6d0", "当前剖线")]
+    marks.extend(line(part["ends"], "#8ce99a", f"续接 {index}") for index, part in enumerate(parts[1:], 1))
+    for index, span in enumerate(covered):
+        marks.append({**line([parts[index]["ends"][1], parts[index + 1]["ends"][0]], "#9aa8a1",
+                             f"遮住 {span['mm']} mm"), "dashed": True})
+    for index, pin in enumerate(pins, 1):
+        chosen = continuation and continuation["pin"] == index - 1
+        marks.append(line(pin, "#ecff96" if chosen else "#dbbd73",
+                          f"推荐 · 暂留 {index}" if chosen else f"暂留 {index}"))
+    if continuation:
+        marks.append({**line([continuation["joint"], continuation["head"]], "#ecff96",
+                             f"遮住约 {continuation['gap_mm']} mm"), "dashed": True})
+
+    rows = [record("起点", parts[0]["ends"][0], "原片像素", parts[0]["ends"][0])]
+    for index, span in enumerate(covered, 1):
+        rows.append(record(f"遮住 {index}", f"{span['mm']} mm", "焊带遮住 · 不计入可见长度 · 原片无落点"))
+        rows.append(record(f"续接 {index}", f"{parts[index]['length']} mm",
+                           f"距起点 {trace_parts[index]['from']}–{trace_parts[index]['to']} mm",
+                           parts[index]["ends"][0]))
+    rows.append(record("终点", parts[-1]["ends"][1], "原片像素", parts[-1]["ends"][1]))
+    if note:
+        rows.append(record("续接推荐", "无合格段", note))
+
+    visible = [sample["y"] for sample in samples if sample["y"] is not None]
+    metrics = [metric("中位对比", compact(np.median(visible))), metric("暂留剖线", len(pins))]
+    if covered:
+        metrics.insert(0, metric("遮住段", compact(sum(span["mm"] for span in covered), 2), "mm"))
+        metrics.insert(0, metric("可见裂纹长度", compact(sum(part["pixels"] for part in parts) * view.mm, 2), "mm"))
+    else:
+        metrics.insert(0, metric("剖线长度", parts[0]["length"], "mm"))
+    graph = {**plot("沿剖线明暗差", samples), "trace_ends": main_ends}
+    if covered:
+        graph["trace_parts"] = trace_parts
+        graph["covered"] = covered
+    extra = {"continuation": continuation} if continuation else {}
+    return metrics, rows, marks, graph, extra
+
+
+def rail_positions(view, settings):
+    located = rail_spans(view, settings["rail_window"])
+    if located is None:
+        raise Invalid("定位窗内至少需要四列。")
+    (x0, y0, x1, y1), spans, profile, cutoff = located
     rows, marks = [], [rectangle([[x0, y0], [x1, y1]], "#dbbd73", "定位窗")]
     for index, (left, right) in enumerate(spans[:32], 1):
         label = f"焊带 {index}"
@@ -236,8 +374,13 @@ CHECKS = {
 
 
 def report(view, mode, settings):
-    stats, rows, marks, graph = CHECKS[mode](view, settings)
+    outcome = CHECKS[mode](view, settings)
+    stats, rows, marks, graph = outcome[:4]
     x0, y0, x1, y1 = view.region
-    return {"mode": mode, "heading": model.MODES[mode], "settings": settings, "size": list(view.size),
-            "metrics": stats, "rows": rows, "marks": [rectangle([[x0, y0], [x1, y1]], "#8cbaee"), *marks],
-            "plot": graph}
+    result = {"mode": mode, "heading": model.MODES[mode], "settings": settings, "size": list(view.size),
+              "metrics": stats, "rows": rows,
+              "marks": [rectangle([[x0, y0], [x1, y1]], "#8cbaee"), *marks],
+              "plot": graph}
+    if len(outcome) > 4:
+        result.update(outcome[4])
+    return result

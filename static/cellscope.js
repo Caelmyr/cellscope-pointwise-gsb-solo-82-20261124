@@ -3,7 +3,7 @@
 const byId = (name) => document.getElementById(name);
 const state = {
   modes: {}, mode: 'cells', panel: null, options: null, image: null, result: null,
-  tool: null, anchor: null, hover: null, marker: null, plotCursor: null, serial: 0,
+  tool: null, anchor: null, hover: null, marker: null, plotCursor: null, plotNote: null, serial: 0,
 };
 const photoCanvas = byId('photo');
 const photoContext = photoCanvas.getContext('2d');
@@ -128,7 +128,7 @@ async function openPanel(id) {
   if (serial !== state.serial) return;
   state.panel = panel;
   state.image = image;
-  state.options = panel.settings;
+  state.options = {links: [], ...panel.settings};
   state.result = null;
   localStorage.setItem('cellscope-panel', id);
   byId('title').textContent = panel.title;
@@ -169,6 +169,19 @@ function drawPins() {
     }));
     pins.append(select, remove);
   });
+  (state.options.links || []).forEach((points, index) => {
+    const tag = piece('span', 'linked', `续接 ${index + 1}`);
+    const remove = piece('button', '', '×');
+    remove.setAttribute('aria-label', `移除续接 ${index + 1}，移回暂留`);
+    remove.addEventListener('click', safe(async () => {
+      const links = [...state.options.links];
+      const [back] = links.splice(index, 1);
+      state.options = {...inputValues(), links, pins: [...state.options.pins, back]};
+      drawPins();
+      await run();
+    }));
+    pins.append(tag, remove);
+  });
 }
 
 function drawMark(mark, scaleX, scaleY) {
@@ -180,11 +193,14 @@ function drawMark(mark, scaleX, scaleY) {
   if (mark.type === 'box') {
     photoContext.strokeRect(left, top, right - left, bottom - top);
   } else {
+    photoContext.save();
+    if (mark.dashed) photoContext.setLineDash([6, 4]);
     photoContext.beginPath();
     photoContext.moveTo(left, top);
     points.slice(1).forEach(([x, y]) => photoContext.lineTo(x, y));
     if (mark.type === 'polygon') photoContext.closePath();
     photoContext.stroke();
+    photoContext.restore();
   }
   if (mark.label) {
     photoContext.font = `${Math.max(10, photoCanvas.width / 80)}px system-ui`;
@@ -240,13 +256,15 @@ function drawPlot() {
   plotContext.clearRect(0, 0, width, height);
   byId('plot-title').textContent = graph.label;
   byId('sample-read').textContent = state.plotCursor
-    ? `${state.plotCursor.x} · ${state.plotCursor.y}` : graph.trace_ends ? '点击曲线回到原片' : '';
+    ? `${state.plotCursor.x} · ${state.plotCursor.y}`
+    : state.plotNote || (graph.trace_ends ? '点击曲线回到原片' : '');
   const samples = graph.samples;
+  const readings = samples.filter(s => s.y !== null);
   const [left, right, top, bottom] = [47, width - 27, 13, height - 28];
   const minX = samples[0].x;
   const maxX = samples.at(-1).x;
-  const minY = Math.min(...samples.map(s => s.y));
-  const maxY = Math.max(...samples.map(s => s.y));
+  const minY = Math.min(...readings.map(s => s.y));
+  const maxY = Math.max(...readings.map(s => s.y));
   const toX = (x) => left + (x - minX) * (right - left) / Math.max(maxX - minX, 1e-5);
   const toY = (y) => bottom - (y - minY) * (bottom - top) / Math.max(maxY - minY, 1e-5);
   plotContext.font = '12px system-ui';
@@ -262,13 +280,24 @@ function drawPlot() {
     const value = minX + (maxX - minX) * step / 4;
     plotContext.fillText(String(+value.toPrecision(4)), toX(value), bottom + 21);
   }
+  for (const span of graph.covered || []) {
+    plotContext.fillStyle = 'rgba(83,106,96,.14)';
+    plotContext.fillRect(toX(span.from), top, Math.max(1, toX(span.to) - toX(span.from)), bottom - top);
+  }
   plotContext.beginPath();
   plotContext.strokeStyle = '#166958';
   plotContext.lineWidth = 2;
-  samples.forEach((sample, index) => {
-    if (index) plotContext.lineTo(toX(sample.x), toY(sample.y));
-    else plotContext.moveTo(toX(sample.x), toY(sample.y));
-  });
+  let pen = false;
+  for (const sample of samples) {
+    if (sample.y === null) {
+      pen = false;
+    } else if (pen) {
+      plotContext.lineTo(toX(sample.x), toY(sample.y));
+    } else {
+      plotContext.moveTo(toX(sample.x), toY(sample.y));
+      pen = true;
+    }
+  }
   plotContext.stroke();
   plotContext.lineWidth = 1;
   if (state.plotCursor) {
@@ -294,6 +323,22 @@ function renderResult() {
   }
   const rows = byId('rows');
   rows.replaceChildren();
+  if (result.continuation) {
+    const cont = result.continuation;
+    const block = piece('div', 'adopt');
+    const adopt = piece('button', '', `采用续接 · ${cont.label}`);
+    adopt.addEventListener('click', safe(async () => {
+      const parked = [...state.options.pins];
+      const [chosen] = parked.splice(cont.pin, 1);
+      if (!chosen) return;
+      state.options = {...inputValues(), pins: parked, links: [...(state.options.links || []), chosen]};
+      drawPins();
+      await run();
+      notice(`已采用 ${cont.label} 作为续接段`);
+    }));
+    block.append(adopt, piece('small', '', cont.reason));
+    rows.append(block);
+  }
   for (const row of result.rows) {
     const element = piece(row.at ? 'button' : 'div', 'result-row');
     element.append(piece('span', '', row.label), piece('b', '', Array.isArray(row.value) ? row.value.join(', ') : row.value));
@@ -322,6 +367,7 @@ async function run() {
   state.result = result;
   state.marker = null;
   state.plotCursor = null;
+  state.plotNote = null;
   renderResult();
 }
 
@@ -331,9 +377,10 @@ async function openCheck(id) {
   if (serial !== state.serial) return;
   state.result = saved;
   state.mode = saved.mode;
-  state.options = saved.settings;
+  state.options = {links: [], ...saved.settings};
   state.marker = null;
   state.plotCursor = null;
+  state.plotNote = null;
   drawInputs();
   renderModes();
   renderResult();
@@ -401,6 +448,30 @@ plotCanvas.addEventListener('click', (event) => {
   const left = 47, right = plotCanvas.width - 27;
   const x = (event.clientX - rect.left - 10) * plotCanvas.width / (rect.width - 20);
   const t = Math.max(0, Math.min(1, (x - left) / (right - left)));
+  state.plotNote = null;
+  if (graph.trace_parts) {
+    const minX = graph.samples[0].x, maxX = graph.samples.at(-1).x;
+    const at = minX + t * (maxX - minX);
+    const part = graph.trace_parts.find(p => at >= p.from && at <= p.to);
+    if (!part) {
+      state.plotCursor = null;
+      state.plotNote = '遮住段 · 无灰度读数 · 原片无落点';
+      showAt(null);
+      byId('position').textContent = '遮住段 · 原片无落点';
+      drawPlot();
+      return;
+    }
+    const frac = part.to > part.from ? (at - part.from) / (part.to - part.from) : 0;
+    const [a, b] = part.ends;
+    let best = null;
+    for (const sample of graph.samples) {
+      if (sample.y !== null && (!best || Math.abs(sample.x - at) < Math.abs(best.x - at))) best = sample;
+    }
+    state.plotCursor = best;
+    showAt([Math.round(a[0] + frac * (b[0] - a[0])), Math.round(a[1] + frac * (b[1] - a[1]))]);
+    drawPlot();
+    return;
+  }
   state.plotCursor = graph.samples[Math.round(t * (graph.samples.length - 1))];
   if (graph.trace_ends) {
     const [a, b] = graph.trace_ends;

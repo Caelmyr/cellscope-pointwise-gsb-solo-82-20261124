@@ -27,6 +27,7 @@ DEFAULTS = {
     "roi": [0.05, 0.08, 0.95, 0.92],
     "trace": [[0.087, 0.17], [0.149, 0.221]],
     "pins": [],
+    "links": [],
     "rail_window": [0.137, 0.132, 0.179, 0.341],
 }
 
@@ -93,6 +94,10 @@ def settings(value, fallback):
     if not isinstance(pins, list) or len(pins) > 12:
         raise Invalid("一张照片最多暂留 12 段剖线。")
     result["pins"] = [points(pin) for pin in pins]
+    links = chosen.get("links") or []
+    if not isinstance(links, list) or len(links) > 6:
+        raise Invalid("一张照片最多续接 6 段剖线。")
+    result["links"] = [points(link) for link in links]
     return result
 
 
