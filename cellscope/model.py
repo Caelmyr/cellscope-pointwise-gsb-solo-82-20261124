@@ -25,6 +25,7 @@ DEFAULTS = {
     "hot_cutoff": 0.94,
     "band": 7,
     "roi": [0.05, 0.08, 0.95, 0.92],
+    "cut": None,
     "trace": [[0.087, 0.17], [0.149, 0.221]],
     "pins": [],
     "rail_window": [0.137, 0.132, 0.179, 0.341],
@@ -89,6 +90,8 @@ def settings(value, fallback):
     result["roi"] = rectangle(chosen["roi"], "检查框")
     result["rail_window"] = rectangle(chosen["rail_window"], "焊带定位窗")
     result["trace"] = points(chosen["trace"])
+    cut = chosen.get("cut")
+    result["cut"] = None if cut is None else points(cut)
     pins = chosen["pins"]
     if not isinstance(pins, list) or len(pins) > 12:
         raise Invalid("一张照片最多暂留 12 段剖线。")

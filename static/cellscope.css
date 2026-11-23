@@ -73,6 +73,11 @@ h1{font-size:27px;font-weight:760;line-height:1.27;margin:2px 0}
 .metric small{font-size:11px;color:var(--muted)}
 .metric b{font-size:16px;font-variant-numeric:tabular-nums}
 .result-rows{max-height:290px;overflow:auto}
+.cut-actions{display:flex;flex-wrap:wrap;align-items:center;gap:7px;padding:8px 11px 11px;border-top:1px solid #e9efeb}
+.cut-actions:empty{display:none}
+.cut-actions button{font-size:12px}
+.cut-state{font-size:12px;color:#7a4c0c}
+.cut-actions .quiet{font-size:11px}
 .result-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 8px;text-align:left;padding:7px 12px;width:100%;border:0;border-top:1px solid #e9efeb;border-radius:0}
 .result-row small{grid-column:1/-1;color:var(--muted);font-size:11px}
 #status{position:fixed;right:20px;bottom:20px;padding:9px 13px;border-radius:7px;background:#173a30;color:white;box-shadow:0 6px 23px #0d2d2142;max-width:min(620px,92vw);z-index:2}

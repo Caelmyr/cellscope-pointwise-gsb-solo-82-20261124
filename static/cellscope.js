@@ -3,7 +3,7 @@
 const byId = (name) => document.getElementById(name);
 const state = {
   modes: {}, mode: 'cells', panel: null, options: null, image: null, result: null,
-  tool: null, anchor: null, hover: null, marker: null, plotCursor: null, serial: 0,
+  recommendation: null, tool: null, anchor: null, hover: null, marker: null, plotCursor: null, serial: 0,
 };
 const photoCanvas = byId('photo');
 const photoContext = photoCanvas.getContext('2d');
@@ -130,6 +130,7 @@ async function openPanel(id) {
   state.image = image;
   state.options = panel.settings;
   state.result = null;
+  state.recommendation = null;
   localStorage.setItem('cellscope-panel', id);
   byId('title').textContent = panel.title;
   byId('source-info').textContent = `${sourceTag(panel)} · ${panel.filename} · ${panel.width} × ${panel.height} px`;
@@ -279,6 +280,41 @@ function drawPlot() {
   }
 }
 
+function renderCutActions() {
+  const panel = byId('cut-actions');
+  panel.replaceChildren();
+  if (!state.panel) return;
+  const adopted = state.options.cut;
+  const offered = state.mode === 'edge' ? state.recommendation : null;
+  if (adopted) {
+    const label = piece('span', 'cut-state', '已采用试裁线 · 暗区面积按剩余片区计');
+    const clear = piece('button', '', '取消采用');
+    clear.addEventListener('click', safe(async () => {
+      state.options = {...inputValues(), cut: null};
+      state.mode = 'edge';
+      renderModes();
+      await run();
+      notice('已取消采用试裁线');
+    }));
+    panel.append(label, clear);
+    return;
+  }
+  if (offered?.endpoints) {
+    const adopt = piece('button', 'primary', '采用建议试裁线');
+    adopt.addEventListener('click', safe(async () => {
+      state.options = {...inputValues(), cut: offered.endpoints};
+      state.mode = 'dark';
+      renderModes();
+      await run();
+      notice('已采用试裁线，暗区面积改按剩余片区计');
+    }));
+    const hint = piece('small', 'quiet', '采用后查看「暗区面积」中剩余片区的读数');
+    panel.append(adopt, hint);
+  } else if (state.mode === 'edge') {
+    panel.append(piece('small', 'quiet', '这次没有可采用的试裁线'));
+  }
+}
+
 function renderResult() {
   const result = state.result;
   if (!result) return;
@@ -307,6 +343,7 @@ function renderResult() {
     if (result.id) download.href = '/el' + panelPath(`/checks/${result.id}/${ext}`);
     else download.removeAttribute('href');
   }
+  renderCutActions();
   drawPhoto();
   drawPlot();
   listChecks();
@@ -320,6 +357,7 @@ async function run() {
   if (serial !== state.serial) return;
   state.options = result.settings;
   state.result = result;
+  state.recommendation = result.recommendation || null;
   state.marker = null;
   state.plotCursor = null;
   renderResult();
@@ -332,6 +370,7 @@ async function openCheck(id) {
   state.result = saved;
   state.mode = saved.mode;
   state.options = saved.settings;
+  state.recommendation = saved.recommendation || null;
   state.marker = null;
   state.plotCursor = null;
   drawInputs();
@@ -388,6 +427,10 @@ photoCanvas.addEventListener('click', safe(async (event) => {
   const coords = name === 'trace' ? [initial, point] :
     [Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)];
   state.options = {...inputValues(), [name]: coords};
+  if (name === 'roi' && state.options.cut) {
+    state.options = {...state.options, cut: null};
+    notice('检查区已重画，之前的试裁线不再沿用');
+  }
   if (name !== 'roi') state.mode = name === 'trace' ? 'trace' : 'rails';
   selectTool(null);
   renderModes();
@@ -450,6 +493,7 @@ byId('save').addEventListener('click', safe(async () => {
   state.panel = saved.panel;
   state.options = saved.check.settings;
   state.result = saved.check;
+  state.recommendation = saved.check.recommendation || null;
   state.marker = null;
   state.plotCursor = null;
   renderResult();

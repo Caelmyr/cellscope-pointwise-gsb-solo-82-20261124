@@ -7,7 +7,7 @@ import numpy as np
 
 from image_lab.validation import Invalid
 
-from . import model, photo
+from . import cutline, model, photo
 
 
 def metric(label, value, units=""):
@@ -62,22 +62,26 @@ def cell_map(view, settings):
         marks.append(rectangle([[x0, y0], [x1, y1]], "#dbbd73", name))
     stats = [metric("电池片", len(rows)), metric("最低中位灰度", min(means)),
              metric("最高中位灰度", max(means))]
-    return stats, rows, marks, None
+    return stats, rows, marks, None, None
 
 
 def regions(view, settings, bright=False):
     pixels = view.roi
     mask = pixels >= settings["hot_cutoff"] if bright else pixels < settings["dark_cutoff"]
+    kept = None if bright else cutline.retained(view, settings.get("cut"))
+    if kept is not None:
+        mask = mask & kept
     count, labels, stats, centers = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
     x0, y0, _, _ = view.region
     minimum = settings["min_area"]
     accepted = sorted((index for index in range(1, count) if stats[index, cv2.CC_STAT_AREA] >= minimum),
                       key=lambda index: (-stats[index, cv2.CC_STAT_AREA], index))
     total = sum(int(stats[index, cv2.CC_STAT_AREA]) for index in accepted)
+    area = int(kept.sum()) if kept is not None else mask.size
     rows, marks = [], []
     color = "#f6d17d" if bright else "#ff896f"
     for ordinal, index in enumerate(accepted[:80], 1):
-        left, top, width, height, area = map(int, stats[index])
+        left, top, width, height, area_px = map(int, stats[index])
         x, y = left + x0, top + y0
         center = [round(float(centers[index, 0])) + x0, round(float(centers[index, 1])) + y0]
         local_labels = labels[top:top + height, left:left + width]
@@ -89,10 +93,13 @@ def regions(view, settings, bright=False):
         label = f"{'亮斑' if bright else '暗区'} {ordinal}"
         marks.append(polygon(coords, color, label) if len(coords) > 2
                      else rectangle([[x, y], [x + width, y + height]], color, label))
-        rows.append(record(label, compact(area * view.mm**2, 2), f"mm² · {area}px", center))
+        rows.append(record(label, compact(area_px * view.mm**2, 2), f"mm² · {area_px}px", center))
     metrics = [metric("达最小面积的区域", len(accepted)), metric("总面积", compact(total * view.mm**2, 2), "mm²"),
-               metric("占检查框", compact(total * 100 / mask.size, 2), "%")]
-    return metrics, rows, marks, None
+               metric("占剩余片区" if kept is not None else "占检查框",
+                      compact(total * 100 / area, 2), "%")]
+    if kept is not None:
+        metrics.append(metric("剩余片区", compact(area * view.mm**2, 2), "mm²"))
+    return metrics, rows, marks, None, None
 
 
 def dark_map(view, settings):
@@ -139,7 +146,7 @@ def crack_trace(view, settings):
     metrics = [metric("剖线长度", main["length"], "mm"), metric("中位对比", main["contrast"]),
                metric("暂留剖线", len(pins))]
     graph = {**plot("沿剖线明暗差", main["samples"]), "trace_ends": main["ends"]}
-    return metrics, rows, marks, graph
+    return metrics, rows, marks, graph, None
 
 
 def rail_positions(view, settings):
@@ -164,30 +171,12 @@ def rail_positions(view, settings):
     stride = max(1, len(profile) // 500)
     graph = plot("穿过焊带时的列灰度", [{"x": x + x0, "y": compact(value)}
                                         for x, value in zip(range(0, len(profile), stride), profile[::stride])])
-    return stats, rows, marks, graph
+    return stats, rows, marks, graph, None
 
 
 def edges(view, settings):
-    roi = view.roi >= settings["dark_cutoff"]
-    x0, y0, x1, y1 = view.region
-    count = min(36, roi.shape[1])
-    starts = np.linspace(0, roi.shape[1], count + 1, dtype=int)
-    rows, marks, samples = [], [], []
-    for start, stop in zip(starts, starts[1:]):
-        support = np.mean(roi[:, start:stop], axis=1) >= .30
-        eligible = np.flatnonzero(support)
-        if not len(eligible):
-            continue
-        depth = int(eligible[0])
-        x = int(x0 + (start + stop) // 2)
-        samples.append({"x": x, "y": compact(depth * view.mm, 2)})
-        if depth > 1:
-            endpoint = [x, y0 + depth]
-            name = f"原片列 {x}"
-            rows.append(record(name, compact(depth * view.mm, 2), "mm · 到第一条有效行", endpoint))
-            marks.append(line([[x, y0], endpoint], "#ff896f", name))
-    return [metric("扫描段", count), metric("可读段", len(samples)),
-            metric("最大内缩", max((s["y"] for s in samples), default=0), "mm")], rows, marks, plot("上边缘内缩", samples)
+    result, metrics, rows, marks = cutline.report(view, settings)
+    return metrics, rows, marks, None, result
 
 
 def uniformity(view, settings):
@@ -214,7 +203,7 @@ def uniformity(view, settings):
         marks.append(line(ends, "#8cbaee", title))
     stats = [metric("中位灰度", compact(np.median(pixels))),
              metric("行亮度极差", compact(np.ptp(along_rows))), metric("列亮度极差", compact(np.ptp(along_cols)))]
-    return stats, rows, marks, graph
+    return stats, rows, marks, graph, None
 
 
 def levels(view, settings):
@@ -226,7 +215,7 @@ def levels(view, settings):
              metric("近黑像素", int(np.sum(pixels <= .02)))]
     graph = plot("灰度分布", [{"x": compact((left + right) / 2), "y": int(count)}
                               for left, right, count in zip(edges, edges[1:], counts)])
-    return stats, rows, [], graph
+    return stats, rows, [], graph, None
 
 
 CHECKS = {
@@ -236,8 +225,10 @@ CHECKS = {
 
 
 def report(view, mode, settings):
-    stats, rows, marks, graph = CHECKS[mode](view, settings)
+    stats, rows, marks, graph, recommendation = CHECKS[mode](view, settings)
     x0, y0, x1, y1 = view.region
+    extra = [cutline.line_mark(view, settings["cut"], cutline.CUT_COLOR, "采用试裁线")] if settings.get("cut") else []
     return {"mode": mode, "heading": model.MODES[mode], "settings": settings, "size": list(view.size),
-            "metrics": stats, "rows": rows, "marks": [rectangle([[x0, y0], [x1, y1]], "#8cbaee"), *marks],
-            "plot": graph}
+            "metrics": stats, "rows": rows,
+            "marks": [rectangle([[x0, y0], [x1, y1]], "#8cbaee"), *marks, *extra], "plot": graph,
+            "recommendation": recommendation if recommendation and recommendation["endpoints"] else None}
